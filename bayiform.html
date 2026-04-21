@@ -365,18 +365,37 @@ function getGPS() {
 }
 
 // ── PHOTOS ───────────────────────────────────────────────────
-function handlePhoto(input, key) {
-  const file = input.files[0]; if (!file) return;
+function compressImage(file, callback) {
   const reader = new FileReader();
   reader.onload = ev => {
-    photos[key] = { preview: ev.target.result, name: file.name };
-    document.getElementById('prev' + cap(key)).src = ev.target.result;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX = 1000;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+        else       { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      callback(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function handlePhoto(input, key) {
+  const file = input.files[0]; if (!file) return;
+  compressImage(file, compressed => {
+    photos[key] = { preview: compressed, name: file.name };
+    document.getElementById('prev' + cap(key)).src = compressed;
     document.getElementById('prev' + cap(key)).classList.add('show');
     document.getElementById('badge' + cap(key)).classList.add('show');
     document.getElementById('remove' + cap(key)).classList.add('show');
     document.getElementById('box' + cap(key)).classList.add('filled');
-  };
-  reader.readAsDataURL(file);
+  });
 }
 
 function removePhoto(e, key) {
@@ -413,13 +432,17 @@ function submitForm() {
   if (!gpsCoords && !mapsLink)         { showFerr('errKonum');   ok=false; }
   if (!ok) return;
 
+  const newId = Date.now();
+  const record = { id: newId, adSoyad, firma, coords: gpsCoords, mapsLink, tarih: new Date().toLocaleString('tr-TR') };
+  try {
+    localStorage.setItem(KEY + '_dis_' + newId, photos.dis.preview);
+    localStorage.setItem(KEY + '_ici_' + newId, photos.ici.preview);
+  } catch(e) {
+    alert('Depolama alani doldu. Yoneticiye bildirin.');
+    return;
+  }
   const existing = JSON.parse(localStorage.getItem(KEY) || '[]');
-  existing.push({
-    id: Date.now(), adSoyad, firma,
-    disCephe: photos.dis, dukkanIci: photos.ici,
-    coords: gpsCoords, mapsLink,
-    tarih: new Date().toLocaleString('tr-TR')
-  });
+  existing.push(record);
   localStorage.setItem(KEY, JSON.stringify(existing));
   showPage('pageSuccess');
 }
@@ -443,6 +466,14 @@ function doLogout() {
 
 function renderPanel() {
   const subs = JSON.parse(localStorage.getItem(KEY) || '[]');
+  // Fotoğrafları ayrı keylerden yükle
+  const subsWithPhotos = subs.map(s => ({
+    ...s,
+    disSrc: localStorage.getItem(KEY + '_dis_' + s.id) || null,
+    iciSrc: localStorage.getItem(KEY + '_ici_' + s.id) || null,
+  }));
+  window._subs = subsWithPhotos;
+
   document.getElementById('cntBadge').textContent = subs.length + ' kayıt';
   document.getElementById('exportBtn').style.display = subs.length ? 'block' : 'none';
   const container = document.getElementById('cardsContainer');
@@ -452,15 +483,15 @@ function renderPanel() {
     return;
   }
 
-  container.innerHTML = '<div class="cards-grid">' + subs.map(s => `
+  container.innerHTML = '<div class="cards-grid">' + subsWithPhotos.map(s => `
     <div class="bayi-card">
       <div class="card-photos">
-        <div class="card-photo" onclick="openModal('${s.disCephe ? s.disCephe.preview.substring(0,30) : ''}','${s.id}','dis')">
-          ${s.disCephe ? `<img src="${s.disCephe.preview}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
+        <div class="card-photo" onclick="openModal('${s.id}','dis')">
+          ${s.disSrc ? `<img src="${s.disSrc}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
           <div class="cp-label">Dış Cephe</div>
         </div>
-        <div class="card-photo" onclick="openModal('','${s.id}','ici')">
-          ${s.dukkanIci ? `<img src="${s.dukkanIci.preview}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
+        <div class="card-photo" onclick="openModal('${s.id}','ici')">
+          ${s.iciSrc ? `<img src="${s.iciSrc}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
           <div class="cp-label">Dükkan İçi</div>
         </div>
       </div>
@@ -475,17 +506,14 @@ function renderPanel() {
       </div>
     </div>
   `).join('') + '</div>';
-
-  // Store subs in window for modal access
-  window._subs = subs;
 }
 
 // ── MODAL ─────────────────────────────────────────────────────
-function openModal(_, id, type) {
+function openModal(id, type) {
   const subs = window._subs || [];
   const sub  = subs.find(s => s.id == id);
   if (!sub) return;
-  const src  = type === 'dis' ? sub.disCephe?.preview : sub.dukkanIci?.preview;
+  const src  = type === 'dis' ? sub.disSrc : sub.iciSrc;
   if (!src) return;
   document.getElementById('modalImg').src = src;
   document.getElementById('modal').classList.add('show');
