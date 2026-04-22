@@ -418,7 +418,9 @@ function showFerr(id, msg) {
 }
 function hideFerr(id) { document.getElementById(id).classList.remove('show'); }
 
-function submitForm() {
+const SHEET_URL = 'https://script.google.com/macros/s/AKfycbzvlbGSIizorYkQA1neMRrFqUtSp4f2amlq_WWmVjFEYyQepnEtG9U5rjT36hXVHlwl/exec';
+
+async function submitForm() {
   let ok = true;
   hideFerr('errAdSoyad'); hideFerr('errFirma'); hideFerr('errFoto'); hideFerr('errKonum'); hideFerr('errGps');
 
@@ -426,25 +428,41 @@ function submitForm() {
   const firma   = document.getElementById('firma').value.trim();
   const mapsLink= document.getElementById('mapsLink').value.trim();
 
-  if (!adSoyad)                        { showFerr('errAdSoyad'); ok=false; }
-  if (!firma)                          { showFerr('errFirma');   ok=false; }
-  if (!photos.dis || !photos.ici)      { showFerr('errFoto');    ok=false; }
-  if (!gpsCoords && !mapsLink)         { showFerr('errKonum');   ok=false; }
+  if (!adSoyad)                   { showFerr('errAdSoyad'); ok=false; }
+  if (!firma)                     { showFerr('errFirma');   ok=false; }
+  if (!photos.dis || !photos.ici) { showFerr('errFoto');    ok=false; }
+  if (!gpsCoords && !mapsLink)    { showFerr('errKonum');   ok=false; }
   if (!ok) return;
 
-  const newId = Date.now();
-  const record = { id: newId, adSoyad, firma, coords: gpsCoords, mapsLink, tarih: new Date().toLocaleString('tr-TR') };
+  // Butonu yükleniyor yap
+  const btn = document.querySelector('.submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Gönderiliyor...';
+
+  const payload = {
+    tarih:    new Date().toLocaleString('tr-TR'),
+    adSoyad, firma,
+    lat:      gpsCoords ? gpsCoords.lat : '',
+    lng:      gpsCoords ? gpsCoords.lng : '',
+    mapsLink,
+    disCephe:  photos.dis.preview,
+    dukkanIci: photos.ici.preview
+  };
+
   try {
-    localStorage.setItem(KEY + '_dis_' + newId, photos.dis.preview);
-    localStorage.setItem(KEY + '_ici_' + newId, photos.ici.preview);
-  } catch(e) {
-    alert('Depolama alani doldu. Yoneticiye bildirin.');
-    return;
+    await fetch(SHEET_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    showPage('pageSuccess');
+  } catch(err) {
+    alert('Bağlantı hatası. İnternet bağlantınızı kontrol edip tekrar deneyin.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Bilgileri Gönder →';
   }
-  const existing = JSON.parse(localStorage.getItem(KEY) || '[]');
-  existing.push(record);
-  localStorage.setItem(KEY, JSON.stringify(existing));
-  showPage('pageSuccess');
 }
 
 // ── ADMIN ─────────────────────────────────────────────────────
@@ -464,56 +482,68 @@ function doLogout() {
   showPage('pageLogin');
 }
 
-function renderPanel() {
-  const subs = JSON.parse(localStorage.getItem(KEY) || '[]');
-  // Fotoğrafları ayrı keylerden yükle
-  const subsWithPhotos = subs.map(s => ({
-    ...s,
-    disSrc: localStorage.getItem(KEY + '_dis_' + s.id) || null,
-    iciSrc: localStorage.getItem(KEY + '_ici_' + s.id) || null,
-  }));
-  window._subs = subsWithPhotos;
-
-  document.getElementById('cntBadge').textContent = subs.length + ' kayıt';
-  document.getElementById('exportBtn').style.display = subs.length ? 'block' : 'none';
+async function renderPanel() {
   const container = document.getElementById('cardsContainer');
+  document.getElementById('cntBadge').textContent = 'Yükleniyor...';
+  container.innerHTML = '<div class="empty-state"><div class="empty-icon">⏳</div><p>Veriler yükleniyor...</p></div>';
 
-  if (!subs.length) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><p>Henüz hiç başvuru bulunmuyor.</p></div>';
-    return;
+  try {
+    const resp = await fetch(SHEET_URL + '?t=' + Date.now());
+    const json = await resp.json();
+    const rows = json.data || [];
+
+    // İlk satır başlık, geri kalanlar veri
+    const dataRows = rows.length > 1 ? rows.slice(1) : [];
+    window._subs = dataRows;
+
+    document.getElementById('cntBadge').textContent = dataRows.length + ' kayıt';
+    document.getElementById('exportBtn').style.display = dataRows.length ? 'block' : 'none';
+
+    if (!dataRows.length) {
+      container.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><p>Henüz hiç başvuru bulunmuyor.</p></div>';
+      return;
+    }
+
+    // Sütun sırası: [tarih, adSoyad, firma, lat, lng, mapsLink, disCephe, dukkanIci]
+    container.innerHTML = '<div class="cards-grid">' + dataRows.map((row, i) => {
+      const [tarih, adSoyad, firma, lat, lng, mapsLink, disSrc, iciSrc] = row;
+      const mapsHref = lat && lng ? `https://www.google.com/maps?q=${lat},${lng}` : '';
+      return `
+        <div class="bayi-card">
+          <div class="card-photos">
+            <div class="card-photo" onclick="openModalIdx(${i},'dis')">
+              ${disSrc ? `<img src="${disSrc}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
+              <div class="cp-label">Dış Cephe</div>
+            </div>
+            <div class="card-photo" onclick="openModalIdx(${i},'ici')">
+              ${iciSrc ? `<img src="${iciSrc}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
+              <div class="cp-label">Dükkan İçi</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="card-firma">${firma || ''}</div>
+            <div class="card-ad">${adSoyad || ''}</div>
+            <div class="card-meta">
+              ${mapsHref ? `<div class="meta-item"><span>📍</span><a href="${mapsHref}" target="_blank">${lat}, ${lng}</a></div>` : ''}
+              ${mapsLink ? `<div class="meta-item"><span>🔗</span><a href="${mapsLink}" target="_blank">Google Maps Linki</a></div>` : ''}
+            </div>
+            <div class="card-date">${tarih || ''}</div>
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+
+  } catch(err) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>Veriler yüklenemedi. İnternet bağlantınızı kontrol edin.</p></div>';
   }
-
-  container.innerHTML = '<div class="cards-grid">' + subsWithPhotos.map(s => `
-    <div class="bayi-card">
-      <div class="card-photos">
-        <div class="card-photo" onclick="openModal('${s.id}','dis')">
-          ${s.disSrc ? `<img src="${s.disSrc}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
-          <div class="cp-label">Dış Cephe</div>
-        </div>
-        <div class="card-photo" onclick="openModal('${s.id}','ici')">
-          ${s.iciSrc ? `<img src="${s.iciSrc}" alt=""/>` : '<span style="font-size:11px;color:#bbb">Yok</span>'}
-          <div class="cp-label">Dükkan İçi</div>
-        </div>
-      </div>
-      <div class="card-body">
-        <div class="card-firma">${s.firma}</div>
-        <div class="card-ad">${s.adSoyad}</div>
-        <div class="card-meta">
-          ${s.coords ? `<div class="meta-item"><span>📍</span><a href="https://www.google.com/maps?q=${s.coords.lat},${s.coords.lng}" target="_blank">${s.coords.lat}, ${s.coords.lng}</a></div>` : ''}
-          ${s.mapsLink ? `<div class="meta-item"><span>🔗</span><a href="${s.mapsLink}" target="_blank">Google Maps Linki</a></div>` : ''}
-        </div>
-        <div class="card-date">${s.tarih}</div>
-      </div>
-    </div>
-  `).join('') + '</div>';
 }
 
 // ── MODAL ─────────────────────────────────────────────────────
-function openModal(id, type) {
-  const subs = window._subs || [];
-  const sub  = subs.find(s => s.id == id);
-  if (!sub) return;
-  const src  = type === 'dis' ? sub.disSrc : sub.iciSrc;
+function openModalIdx(idx, type) {
+  const rows = window._subs || [];
+  const row  = rows[idx];
+  if (!row) return;
+  // [tarih, adSoyad, firma, lat, lng, mapsLink, disCephe, dukkanIci]
+  const src = type === 'dis' ? row[6] : row[7];
   if (!src) return;
   document.getElementById('modalImg').src = src;
   document.getElementById('modal').classList.add('show');
@@ -523,14 +553,11 @@ function closeModal() { document.getElementById('modal').classList.remove('show'
 
 // ── CSV EXPORT ────────────────────────────────────────────────
 function exportCSV() {
-  const subs = JSON.parse(localStorage.getItem(KEY) || '[]');
-  const header = ['Ad Soyad','Firma Ünvanı','Enlem','Boylam','Maps Linki','Tarih'];
-  const rows = subs.map(s => [
-    s.adSoyad, s.firma,
-    s.coords?.lat || '', s.coords?.lng || '',
-    s.mapsLink || '', s.tarih
-  ]);
-  const csv = [header, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+  const rows = window._subs || [];
+  if (!rows.length) return;
+  const header = ['Tarih','Ad Soyad','Firma Ünvanı','Enlem','Boylam','Maps Linki'];
+  const data = rows.map(r => [r[0], r[1], r[2], r[3], r[4], r[5]]);
+  const csv = [header, ...data].map(r => r.map(c => '"' + (c||'') + '"').join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'}));
   a.download = 'airfel_bayiler_' + new Date().toLocaleDateString('tr-TR').replace(/\./g,'-') + '.csv';
